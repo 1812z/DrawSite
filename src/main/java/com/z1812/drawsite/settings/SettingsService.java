@@ -29,49 +29,86 @@ public class SettingsService {
         var current = decode(settings.readAll());
         return new PublicSettings(current.registrationEnabled(), current.models().stream()
                 .filter(model -> Boolean.TRUE.equals(model.enabled()))
-                .map(model -> new PublicModel(model.id(), model.displayName(), model.supportsTools())).toList(),
+                .map(model -> new PublicModel(model.id(), model.displayName(), model.supportsTools(), Boolean.TRUE.equals(model.supportsReasoning()))).toList(),
                 current.defaultModelId());
     }
 
     public AdminSettings adminSettings() {
         StpUtil.checkRole("ADMIN");
-        return decode(settings.readAll());
+        return redact(decode(settings.readAll()));
+    }
+
+    public ModelConfig resolveModel(String modelId) {
+        var current = decode(settings.readAll());
+        String id = modelId == null ? current.defaultModelId() : modelId;
+        return current.models().stream().filter(model -> model.id().equals(id) && Boolean.TRUE.equals(model.enabled()))
+                .findFirst().orElseThrow(() -> new BusinessException("MODEL_UNAVAILABLE", "请选择已启用的模型", HttpStatus.BAD_REQUEST));
     }
 
     @Transactional
     public AdminSettings update(UpdateRequest request) {
         StpUtil.checkRole("ADMIN");
         if (!request.versions().keySet().equals(KEYS)) throw invalid("必须提供全部配置版本");
-        validateModels(request.models(), request.defaultModelId());
         var current = decode(settings.lockAll());
         if (!current.versions().equals(request.versions())) {
             throw new BusinessException("SETTINGS_CONFLICT", "配置已被更新，请刷新后重试", HttpStatus.CONFLICT);
         }
+        var models = mergeKeys(request.models(), current.models());
+        validateModels(models, request.defaultModelId());
         String userId = StpUtil.getLoginIdAsString();
         write("registration.enabled", request.registrationEnabled(), current, userId);
-        write("ai.models", request.models(), current, userId);
+        write("ai.models", models, current, userId);
         write("ai.defaultModelId", request.defaultModelId(), current, userId);
-        return decode(settings.readAll());
+        return redact(decode(settings.readAll()));
     }
 
-    private void write(String key, Object value, AdminSettings current, String userId) {
+    private void write(String key, Object value, StoredSettings current, String userId) {
         if (settings.update(key, json.writeValueAsString(value), current.versions().get(key), userId) != 1) {
             throw new BusinessException("SETTINGS_CONFLICT", "配置已被更新，请刷新后重试", HttpStatus.CONFLICT);
         }
     }
 
-    private AdminSettings decode(List<SettingRow> rows) {
+    private StoredSettings decode(List<SettingRow> rows) {
         try {
             var values = rows.stream().collect(Collectors.toMap(SettingRow::settingKey, SettingRow::valueJson));
             if (!values.keySet().equals(KEYS)) throw invalidStoredSettings();
             var enabled = json.readTree(values.get("registration.enabled"));
             if (!enabled.isBoolean()) throw invalidStoredSettings();
-            var models = List.of(json.readValue(values.get("ai.models"), ModelConfig[].class));
+            var modelNodes = json.readTree(values.get("ai.models"));
+            if (!modelNodes.isArray()) throw invalidStoredSettings();
+            for (var node : modelNodes) {
+                if (node instanceof tools.jackson.databind.node.ObjectNode object) object.remove("credentialRef");
+            }
+            var models = List.of(json.readValue(modelNodes.toString(), ModelConfig[].class));
             String defaultId = json.readValue(values.get("ai.defaultModelId"), String.class);
             var versions = rows.stream().collect(Collectors.toMap(SettingRow::settingKey, SettingRow::version));
-            return new AdminSettings(enabled.asBoolean(), models, defaultId, versions);
+            return new StoredSettings(enabled.asBoolean(), models, defaultId, versions);
         } catch (BusinessException exception) { throw exception; }
         catch (RuntimeException exception) { throw invalidStoredSettings(); }
+    }
+
+    private AdminSettings redact(StoredSettings current) {
+        return new AdminSettings(current.registrationEnabled(), current.models().stream()
+                .map(model -> new AdminModelView(model.id(), model.displayName(), model.provider(), model.modelName(),
+                        model.baseUrl(), model.apiKey() != null && !model.apiKey().isBlank(), model.enabled(),
+                        model.supportsTools(), model.temperature(), model.timeoutSeconds(), model.supportsReasoning()))
+                .toList(), current.defaultModelId(), current.versions());
+    }
+
+    private List<ModelConfig> mergeKeys(List<ModelConfig> incoming, List<ModelConfig> existing) {
+        var oldModels = existing.stream().collect(Collectors.toMap(ModelConfig::id, model -> model));
+        return incoming.stream().map(model -> {
+            String key = model.apiKey();
+            if (key == null || key.isBlank()) {
+                var old = oldModels.get(model.id());
+                key = old == null ? null : old.apiKey();
+            } else key = key.strip();
+            if (Boolean.TRUE.equals(model.enabled()) && (key == null || key.isBlank())) {
+                throw invalid("启用模型必须填写 API Key：" + model.id());
+            }
+            return new ModelConfig(model.id(), model.displayName(), model.provider(), model.modelName(), model.baseUrl(),
+                    key, model.enabled(), model.supportsTools(), model.temperature(), model.timeoutSeconds(), model.supportsReasoning());
+        }).toList();
     }
 
     private void validateModels(List<ModelConfig> models, String defaultId) {

@@ -10,16 +10,25 @@ public final class SettingsDtos {
     private SettingsDtos() {}
 
     public record ModelConfig(
-            @NotBlank @Pattern(regexp = "[a-zA-Z0-9_-]{1,64}") String id,
+            @NotBlank @Pattern(regexp = "[a-zA-Z0-9_:.-]{1,64}") String id,
             @NotBlank @Size(max = 100) String displayName,
             @NotBlank @Pattern(regexp = "OPENAI_COMPATIBLE") String provider,
             @NotBlank @Size(max = 200) String modelName,
             @NotBlank @Size(max = 1000) String baseUrl,
-            @NotBlank @Pattern(regexp = "[A-Z][A-Z0-9_]{0,99}") String credentialRef,
+            @Size(max = 4096) String apiKey,
             @NotNull Boolean enabled,
             @NotNull Boolean supportsTools,
             @NotNull @DecimalMin("0.0") @DecimalMax("2.0") Double temperature,
-            @NotNull @Min(1) @Max(600) Integer timeoutSeconds) {}
+            @NotNull @Min(1) @Max(600) Integer timeoutSeconds,
+            Boolean supportsReasoning) {
+        @Override
+        public String toString() { return "ModelConfig[id=" + id + ", apiKey=REDACTED]"; }
+    }
+
+    public record AdminModelView(String id, String displayName, String provider, String modelName,
+                                 String baseUrl, boolean apiKeyConfigured, Boolean enabled,
+                                 Boolean supportsTools, Double temperature, Integer timeoutSeconds,
+                                 Boolean supportsReasoning) {}
 
     public record UpdateRequest(
             @NotNull Boolean registrationEnabled,
@@ -27,9 +36,11 @@ public final class SettingsDtos {
             @Size(max = 64) String defaultModelId,
             @NotNull Map<String, @NotNull @PositiveOrZero Long> versions) {}
 
-    public record AdminSettings(boolean registrationEnabled, List<ModelConfig> models,
+    public record StoredSettings(boolean registrationEnabled, List<ModelConfig> models,
+                                 String defaultModelId, Map<String, Long> versions) {}
+    public record AdminSettings(boolean registrationEnabled, List<AdminModelView> models,
                                 String defaultModelId, Map<String, Long> versions) {}
-    public record PublicModel(String id, String displayName, boolean supportsTools) {}
+    public record PublicModel(String id, String displayName, boolean supportsTools, boolean supportsReasoning) {}
     public record PublicSettings(boolean registrationEnabled, List<PublicModel> models, String defaultModelId) {}
     public record SettingRow(String settingKey, String valueJson, long version, OffsetDateTime updatedAt) {}
 }

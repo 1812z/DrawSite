@@ -10,4 +10,7 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
     List<ConversationEntity> list(@Param("applicationId") String applicationId, @Param("size") int size, @Param("offset") long offset);
     @Select("SELECT COUNT(*) FROM conversation WHERE application_id = #{applicationId}")
     long count(String applicationId);
+
+    @Update("UPDATE conversation SET title = #{title} WHERE id = #{id} AND title = '新建会话'")
+    int autoTitle(@Param("id") String id, @Param("title") String title);
 }

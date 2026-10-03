@@ -20,7 +20,7 @@ public class ConversationService {
         this.messages = messages;
     }
 
-    private ConversationEntity requireOwned(String applicationId, String conversationId) {
+    public ConversationEntity requireOwned(String applicationId, String conversationId) {
         applications.requireOwned(applicationId);
         var conversation = conversations.selectOneById(conversationId);
         if (conversation == null || !applicationId.equals(conversation.getApplicationId())) {
