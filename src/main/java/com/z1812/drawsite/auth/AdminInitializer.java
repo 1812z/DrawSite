@@ -31,7 +31,7 @@ public class AdminInitializer implements ApplicationRunner {
         String password = Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
         String hash = new BCryptPasswordEncoder().encode(password);
         Integer updated = transactions.execute(status -> users.initializeAdmin(hash));
-        // 事务提交成功且本实例完成初始化后才输出；重启不会再次输出。
+        // 首次提交成功后输出密码
         if (Integer.valueOf(1).equals(updated)) {
             System.out.printf("%n[DrawSite] 初始管理员账号：admin%n[DrawSite] 初始随机密码：%s%n"
                     + "[DrawSite] 请保存此密码，后续启动不再显示。%n%n", password);

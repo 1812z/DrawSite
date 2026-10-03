@@ -1,4 +1,11 @@
-package com.z1812.drawsite.agent;
+package com.z1812.drawsite.agent.runtime;
+
+import com.z1812.drawsite.agent.framework.AgentModelFactory;
+import com.z1812.drawsite.agent.framework.ToolChatRunner;
+import com.z1812.drawsite.agent.memory.MemoryMapper;
+import com.z1812.drawsite.application.ApplicationMapper;
+import com.z1812.drawsite.tool.framework.ProjectToolRegistry;
+import com.z1812.drawsite.tool.framework.ToolContext;
 
 import com.z1812.drawsite.application.ApplicationService;
 import com.z1812.drawsite.conversation.*;
@@ -22,7 +29,7 @@ import java.time.OffsetDateTime;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
-import static com.z1812.drawsite.agent.AgentDtos.*;
+import static com.z1812.drawsite.agent.runtime.AgentDtos.*;
 
 @Service
 public class AgentService implements ApplicationRunner {
@@ -37,7 +44,10 @@ public class AgentService implements ApplicationRunner {
     private final SettingsService settings;
     private final AgentModelFactory models;
     private final TransactionTemplate transactions;
-    private final com.z1812.drawsite.application.ApplicationMapper applicationMapper;
+    private final ApplicationMapper applicationMapper;
+    private final ProjectToolRegistry toolRegistry;
+    private final ToolChatRunner toolRunner;
+    private final com.z1812.drawsite.agent.clarification.ClarificationService clarifications;
     private final ExecutorService workers = Executors.newVirtualThreadPerTaskExecutor();
     private final ExecutorService titles = Executors.newFixedThreadPool(2);
     private final ScheduledExecutorService timer = Executors.newSingleThreadScheduledExecutor();
@@ -46,38 +56,131 @@ public class AgentService implements ApplicationRunner {
     private final Semaphore titleCapacity = new Semaphore(16);
     private final ConcurrentMap<String, Active> active = new ConcurrentHashMap<>();
 
-    private static class Active {
+    private static class Active implements ToolChatRunner.Observer {
         final AgentRun run;
         final StringBuilder text = new StringBuilder();
         final AtomicBoolean terminal = new AtomicBoolean();
+        final List<RunStep> steps = new ArrayList<>();
+        String phase = "WAITING_MODEL";
+        int round = 1;
+        int processLength;
         volatile ScheduledFuture<?> timeout;
+        long timeoutSeconds;
         Active(AgentRun run) { this.run = run; }
         synchronized void append(String value) {
             if (!terminal.get()) {
                 if (text.length() + value.length() > 200000) throw new IllegalStateException("Output limit");
                 text.append(value);
+                phase = "RESPONDING";
+                appendStep("RESPONSE", "生成回复", value, null);
             }
         }
         synchronized String content() { return text.toString(); }
+        synchronized List<RunStep> snapshot() { return List.copyOf(steps); }
+        synchronized String phase() { return phase; }
+        private void endStep(String status) {
+            if (steps.isEmpty()) return;
+            var last = steps.getLast();
+            if (!"RUNNING".equals(last.status())) return;
+            steps.set(steps.size() - 1, new RunStep(last.id(), last.round(), last.type(), last.title(), status,
+                    last.content(), last.toolName(), last.startedAt(), OffsetDateTime.now()));
+        }
+        private void appendStep(String type, String title, String value, String toolName) {
+            if (processLength + value.length() > 1000000) throw new IllegalStateException("Process output limit");
+            processLength += value.length();
+            if (!steps.isEmpty() && steps.getLast().type().equals(type) && "RUNNING".equals(steps.getLast().status())) {
+                var last = steps.getLast();
+                steps.set(steps.size() - 1, new RunStep(last.id(), round, type, title, "RUNNING", last.content() + value,
+                        toolName, last.startedAt(), null));
+            } else {
+                endStep("SUCCEEDED");
+                steps.add(new RunStep(UUID.randomUUID().toString(), round, type, title, "RUNNING", value, toolName, OffsetDateTime.now(), null));
+            }
+        }
+        @Override public synchronized void waiting(int round) {
+            if (terminal.get()) return;
+            this.round = round;
+            text.setLength(0);
+            phase = "WAITING_MODEL";
+            appendStep("WAITING_MODEL", "等待模型响应", "", null);
+        }
+        @Override public synchronized void thinking(String value) {
+            if (terminal.get()) return;
+            phase = "THINKING";
+            appendStep("THINKING", "思考中", value, null);
+        }
+        @Override public synchronized void roundFinished(boolean hasTools) {
+            if (terminal.get()) return;
+            endStep("SUCCEEDED");
+            if (hasTools) text.setLength(0);
+            else steps.removeIf(step -> step.round() == round && step.type().equals("RESPONSE"));
+        }
+        @Override public synchronized void toolStarted(String name, String arguments) {
+            if (terminal.get()) return;
+            phase = "CALLING_TOOL";
+            String title = switch (name) {
+                case "listProjectFiles" -> "查看目录";
+                case "readProjectFile" -> "读取文件";
+                case "searchProjectCode" -> "搜索文件";
+                case "writeProjectFile" -> "写入文件";
+                case "applyProjectPatch" -> "应用补丁";
+                case "replaceProjectText" -> "替换文本";
+                case "deleteProjectFile" -> "删除文件";
+                case "moveProjectFile" -> "移动文件";
+                case "createProjectDirectory" -> "创建目录";
+                case "askDetails" -> "询问细节";
+                case "readGlobalMemory" -> "读取全局记忆";
+                case "writeGlobalMemory" -> "更新全局记忆";
+                case "readProgress" -> "查看开发进度";
+                case "writeProgress" -> "更新开发进度";
+                case "httpRequest" -> "网络请求";
+                case "downloadResource" -> "下载资源";
+                default -> name;
+            };
+            appendStep("TOOL", "调用 " + title, clipDetail(arguments), name);
+        }
+        @Override public synchronized void toolFinished(String result) {
+            if (terminal.get()) return;
+            var last = steps.getLast();
+            String detail = last.content() + "\n\n" + clipDetail(result);
+            steps.set(steps.size() - 1, new RunStep(last.id(), round, last.type(), last.title(),
+                    result.contains("\"code\":\"OK\"") ? "SUCCEEDED" : "FAILED", detail, last.toolName(), last.startedAt(), OffsetDateTime.now()));
+        }
+        synchronized void ended(String status) { endStep(status); phase = status; }
+        private static String clipDetail(String value) { return value == null ? "" : value.substring(0, Math.min(value.length(), 20000)); }
     }
 
     public AgentService(ConversationService conversations, ConversationMapper conversationMapper,
                         ApplicationService applications, MessageMapper messages, AgentRunMapper runs,
                         MemoryMapper memories, SettingsService settings, AgentModelFactory models,
-                        TransactionTemplate transactions, com.z1812.drawsite.application.ApplicationMapper applicationMapper) {
+                        TransactionTemplate transactions, ApplicationMapper applicationMapper,
+                         ProjectToolRegistry toolRegistry, ToolChatRunner toolRunner,
+                         com.z1812.drawsite.agent.clarification.ClarificationService clarifications) {
         this.conversations = conversations; this.conversationMapper = conversationMapper;
         this.applications = applications; this.messages = messages; this.runs = runs;
         this.memories = memories; this.settings = settings; this.models = models; this.transactions = transactions;
         this.applicationMapper = applicationMapper;
+        this.toolRegistry = toolRegistry; this.toolRunner = toolRunner;
+        this.clarifications = clarifications;
     }
 
     @Override
-    public void run(ApplicationArguments args) { runs.recoverInterrupted(); }
+    public void run(ApplicationArguments args) { runs.recoverInterrupted(); clarifications.recover(); }
 
     public RunView start(String appId, String conversationId, ChatRequest request) {
         conversations.requireOwned(appId, conversationId);
         var application = applications.requireOwned(appId);
         ModelConfig model = settings.resolveModel(request.modelId());
+        Set<String> selectedTools = toolRegistry.select(request.toolNames());
+        boolean toolsEnabled = Boolean.TRUE.equals(model.supportsTools());
+        if (!toolsEnabled && (Boolean.TRUE.equals(request.toolsEnabled()) || (request.toolNames() != null && !request.toolNames().isEmpty()))) {
+            throw error("TOOLS_UNSUPPORTED", "该模型未启用工具支持", HttpStatus.BAD_REQUEST);
+        }
+        if (Boolean.FALSE.equals(request.toolsEnabled())) selectedTools = Set.of();
+        final Set<String> enabledTools = selectedTools;
+        if (toolsEnabled && !Boolean.TRUE.equals(model.supportsTools())) {
+            throw error("TOOLS_UNSUPPORTED", "该模型未启用工具支持", HttpStatus.BAD_REQUEST);
+        }
         var effort = request.reasoningEffort() == null ? ReasoningEffort.DEFAULT : request.reasoningEffort();
         if (effort != ReasoningEffort.DEFAULT && !Boolean.TRUE.equals(model.supportsReasoning())) {
             throw error("REASONING_UNSUPPORTED", "该模型未启用思考强度支持", HttpStatus.BAD_REQUEST);
@@ -90,7 +193,7 @@ public class AgentService implements ApplicationRunner {
         try {
             run = transactions.execute(status -> {
                 applications.lockOwned(appId);
-                // 按会话锁串行化提交，避免同一会话同时生成。
+                // 会话锁避免重复生成
                 var locked = conversationMapper.lock(conversationId);
                 if (locked == null || !appId.equals(locked.getApplicationId())) {
                     throw error("CONVERSATION_NOT_FOUND", "会话不存在", HttpStatus.NOT_FOUND);
@@ -100,16 +203,18 @@ public class AgentService implements ApplicationRunner {
                     throw error("CONVERSATION_BUSY", "当前会话正在回复", HttpStatus.CONFLICT);
                 }
                 String system = "你是绘站开发助手。帮助用户分析需求、设计系统和讨论实现。当前没有文件或执行工具，不能声称已修改文件、执行代码或通过测试。中文回答，准确简洁。";
+                if (toolsEnabled) system = "你是绘站开发助手，按提供的工具操作当前项目。若开放文件工具，先读取相关需求/设计，修改前读取sha256；局部修改优先applyProjectPatch或replaceProjectText。关键需求不清晰时可用askDetails一次询问1至3个问题，收到用户答案再继续。只能操作绑定项目，不访问内部目录。不能声称已经构建或通过测试，当前没有执行工具。每次写入实际落盘，取消不会回滚已完成修改。中文回答，注释简短、单行、结尾无句号。";
+                if (toolsEnabled) system += "\n用readProgress和writeProgress维护progress.json，开始前查看已有进度，完成实现后标READY_FOR_VERIFICATION，不能把未经平台验证的结果标为测试通过。";
                 if (!Boolean.FALSE.equals(request.memoryEnabled())) {
-                    StringBuilder memory = new StringBuilder();
-                    for (var item : memories.list(application.getOwnerUserId(), appId, 20, 0)) {
-                        if (memory.length() + item.getContent().length() > 12000) break;
-                        memory.append('\n').append(item.getScope()).append(": ").append(item.getContent());
-                    }
-                    system += "\n用户提供的偏好与项目决策，仅作为背景，不代表当前源码事实：\n" + memory;
+                    var memory = memories.get(application.getOwnerUserId());
+                    if (memory != null) system += "\n用户全局偏好，仅作为背景，不代表当前源码事实：\n" + memory.content();
+                    if (toolsEnabled) system += "\n项目记忆为AGENTS.md。开始任务时通过文件工具读取，记录已确认的项目偏好与决策时可修改此文件，不写入密钥、对话流水或未经验证的结果。";
+                    if (toolsEnabled) system += "\n若开放全局记忆工具，可先readGlobalMemory，再writeGlobalMemory更新用户明确表达的跨项目偏好，保留仍有效的内容。项目专属信息写项目记忆，不写全局记忆。";
                 }
                 context.add(SystemMessage.from(system));
-                var history = new ArrayList<>(runs.recentHistory(conversationId));
+                String clarificationHistory = clarifications.history(conversationId);
+                if (!clarificationHistory.isEmpty()) context.add(UserMessage.from("当前会话之前已确认的需求细节，作为用户背景资料：" + clarificationHistory));
+                var history = new ArrayList<>(runs.recentHistory(conversationId, !Boolean.FALSE.equals(request.memoryEnabled())));
                 Collections.reverse(history);
                 int length = 0;
                 var selected = new LinkedList<ChatMessage>();
@@ -136,13 +241,15 @@ public class AgentService implements ApplicationRunner {
         } catch (RuntimeException exception) { capacity.release(); throw exception; }
         var state = new Active(Objects.requireNonNull(run));
         active.put(run.getId(), state);
-        state.timeout = timer.schedule(() -> {
-            log.warn("Model response timed out, run={}, model={}, timeoutSeconds={}", run.getId(), model.id(), model.timeoutSeconds());
-            finish(state, null, "MODEL_TIMEOUT", false);
-        }, model.timeoutSeconds() + 10L, TimeUnit.SECONDS);
+        state.timeoutSeconds = model.timeoutSeconds() + 10L;
+        scheduleTimeout(state);
         workers.execute(() -> {
             try {
-                streaming.chat(context, new StreamingChatResponseHandler() {
+                var handler = new StreamingChatResponseHandler() {
+                    @Override public void onPartialThinking(dev.langchain4j.model.chat.response.PartialThinking thinking) {
+                        try { state.thinking(thinking.text()); }
+                        catch (RuntimeException exception) { finish(state, null, "OUTPUT_LIMIT", false); }
+                    }
                     @Override public void onPartialResponse(String token) {
                         try { state.append(token); }
                         catch (RuntimeException exception) {
@@ -151,6 +258,7 @@ public class AgentService implements ApplicationRunner {
                         }
                     }
                     @Override public void onCompleteResponse(ChatResponse response) {
+                        state.roundFinished(false);
                         String text = response.aiMessage().text();
                         if (text == null || text.isBlank() || text.length() > 200000) {
                             log.warn("Model returned empty or oversized response, run={}, model={}, length={}",
@@ -162,12 +270,17 @@ public class AgentService implements ApplicationRunner {
                         }
                     }
                     @Override public void onError(Throwable cause) {
-                        // 服务商原始报错只在这里出现，接口只回传错误码，必须落到日志。
+                        // 原始错误写日志，接口仅返回错误码
                         log.error("Model request failed, run={}, model={}, modelName={}, baseUrl={}",
                                 run.getId(), model.id(), model.modelName(), model.baseUrl(), cause);
                         finish(state, null, "MODEL_REQUEST_FAILED", false);
                     }
-                });
+                };
+                if (toolsEnabled) {
+                    var toolContext = new ToolContext(appId, application.getOwnerUserId(), run.getId(), state.terminal::get,
+                            waiting -> waitForUser(state, waiting), run.getMemoryEnabled());
+                    toolRunner.start(streaming, context, toolRegistry.bind(toolContext, enabledTools), handler, state.terminal::get, state);
+                } else { state.waiting(1); streaming.chat(context, handler); }
             } catch (RuntimeException exception) {
                 log.error("Streaming chat invocation failed, run={}, model={}", run.getId(), model.id(), exception);
                 finish(state, null, "MODEL_REQUEST_FAILED", false);
@@ -178,6 +291,8 @@ public class AgentService implements ApplicationRunner {
 
     private boolean finish(Active state, String response, String errorCode, boolean cancelled) {
         if (!state.terminal.compareAndSet(false, true)) return false;
+        state.ended(cancelled ? "CANCELLED" : response == null ? "FAILED" : "SUCCEEDED");
+        state.run.setProcessJson(RunStep.encode(state.snapshot()));
         if (state.timeout != null) state.timeout.cancel(false);
         try {
             transactions.executeWithoutResult(status -> {
@@ -187,10 +302,12 @@ public class AgentService implements ApplicationRunner {
                 if (conversationMapper.lock(run.getConversationId()) == null) return;
                 var stored = runs.selectOneById(run.getId());
                 if (stored == null || !"RUNNING".equals(stored.getStatus())) return;
+                clarifications.cancel(run.getId());
                 if (response != null) {
                     var assistant = new MessageEntity();
                     assistant.setId(UUID.randomUUID().toString()); assistant.setConversationId(run.getConversationId());
                     assistant.setRole("ASSISTANT"); assistant.setContent(response); assistant.setCreatedAt(OffsetDateTime.now());
+                    assistant.setProcessJson(run.getProcessJson());
                     messages.insert(assistant); run.setAssistantMessageId(assistant.getId());
                     conversationMapper.touch(run.getConversationId());
                 }
@@ -205,9 +322,33 @@ public class AgentService implements ApplicationRunner {
                 failed.setId(state.run.getId()); failed.setStatus("FAILED");
                 failed.setErrorCode("RESULT_SAVE_FAILED"); failed.setFinishedAt(OffsetDateTime.now());
                 runs.update(failed);
-            } catch (RuntimeException ignored) { /* 启动恢复处理未完成记录。 */ }
+            } catch (RuntimeException ignored) { /* 启动时恢复未完成任务 */ }
             return false;
         } finally { active.remove(state.run.getId()); capacity.release(); }
+    }
+
+    private void scheduleTimeout(Active state) {
+        state.timeout = timer.schedule(() -> {
+            synchronized (state) {
+                if ("WAITING_USER".equals(state.phase) || state.terminal.get()) return;
+                finish(state, null, "MODEL_TIMEOUT", false);
+            }
+        }, state.timeoutSeconds, TimeUnit.SECONDS);
+    }
+
+    private void waitForUser(Active state, boolean waiting) {
+        synchronized (state) {
+            if (state.terminal.get()) return;
+            if (waiting) {
+                if (state.timeout != null) state.timeout.cancel(false);
+                state.phase = "WAITING_USER";
+                state.run.setProcessJson(RunStep.encode(state.snapshot()));
+                runs.saveProcess(state.run.getId(), state.run.getProcessJson());
+            } else {
+                state.phase = "CALLING_TOOL";
+                scheduleTimeout(state);
+            }
+        }
     }
 
     private void summarize(AgentRun run, ModelConfig model, String key, String user, String assistant) {
@@ -226,7 +367,7 @@ public class AgentService implements ApplicationRunner {
                 if (count >= 2 && count <= 10 && !title.contains("\n")) conversationMapper.autoTitle(run.getConversationId(), title);
             } catch (RuntimeException exception) {
                 log.warn("Conversation auto-title failed, conversation={}", run.getConversationId(), exception);
-                // 标题失败不影响已完成的回复，也不覆盖用户手动命名。
+                // 标题失败不影响回复
             } finally { titleCapacity.release(); }
         });
     }
@@ -279,23 +420,33 @@ public class AgentService implements ApplicationRunner {
             try {
                 while (!closed.get()) {
                     var snapshot = read(conversationId, runId);
-                    // 快照事件便于断线重连，不会因重复 token 拼接导致内容重复。
+                    // 全量快照避免重连后重复拼接
                     emitter.send(SseEmitter.event().name("snapshot").data(snapshot));
                     if (!"RUNNING".equals(snapshot.status())) {
-                        emitter.send(SseEmitter.event().name("done").data(snapshot)); emitter.complete(); break;
+                        emitter.send(SseEmitter.event().name("done").data(snapshot));
+                        if (!closed.get()) emitter.complete();
+                        break;
                     }
                     Thread.sleep(300);
                 }
-            } catch (Exception exception) { emitter.complete(); }
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+            } catch (Exception exception) {
+                // 发送失败后不再完成失效响应
+                log.debug("SSE subscription ended, run={}", runId);
+            }
             finally { close.run(); }
         });
         return emitter;
     }
 
     private RunView view(AgentRun run, String text) {
+        var state = active.get(run.getId());
         return new RunView(run.getId(), run.getConversationId(), run.getStatus(), run.getModelId(), run.getReasoningEffort(),
                 run.getMemoryEnabled(), run.getUserMessageId(), run.getAssistantMessageId(), text, run.getErrorCode(),
-                run.getCreatedAt(), run.getFinishedAt());
+                run.getCreatedAt(), run.getFinishedAt(),
+                state == null ? run.getStatus() : state.phase(),
+                state == null ? RunStep.decode(run.getProcessJson()) : state.snapshot(), clarifications.pending(run.getId()));
     }
     private String clip(String text, int limit) { return text.substring(0, Math.min(text.length(), limit)); }
     private BusinessException error(String code, String message, HttpStatus status) { return new BusinessException(code, message, status); }

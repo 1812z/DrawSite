@@ -1,6 +1,7 @@
 package com.z1812.drawsite.application;
 
 import cn.dev33.satoken.stp.StpUtil;
+import com.z1812.drawsite.agent.runtime.StopAgentEvent;
 import com.z1812.drawsite.common.api.PageResponse;
 import com.z1812.drawsite.common.exception.BusinessException;
 import com.z1812.drawsite.workspace.WorkspaceService;
@@ -50,7 +51,7 @@ public class ApplicationService {
             if ("INITIALIZING".equals(application.getStatus())) {
                 throw new BusinessException("APPLICATION_BUSY", "请等待初始化完成后再删除", HttpStatus.CONFLICT);
             }
-            events.publishEvent(new com.z1812.drawsite.agent.StopAgentEvent(id, null));
+            events.publishEvent(new StopAgentEvent(id, null));
             applications.cancelRuns(id);
             try {
                 workspace.delete(id);
@@ -60,7 +61,6 @@ public class ApplicationService {
             }
             // 清除任务和记忆外键，再级联清理版本、会话与消息
             applications.deleteRuns(id);
-            applications.deleteMemories(id);
             applications.deleteById(id);
         });
     }

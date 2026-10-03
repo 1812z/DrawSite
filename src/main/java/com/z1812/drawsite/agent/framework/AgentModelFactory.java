@@ -1,4 +1,6 @@
-package com.z1812.drawsite.agent;
+package com.z1812.drawsite.agent.framework;
+
+import com.z1812.drawsite.agent.runtime.AgentDtos;
 
 import com.z1812.drawsite.common.exception.BusinessException;
 import com.z1812.drawsite.settings.SettingsDtos.ModelConfig;
@@ -19,7 +21,7 @@ public class AgentModelFactory {
     public OpenAiStreamingChatModel streaming(ModelConfig model, String key, AgentDtos.ReasoningEffort effort) {
         var builder = OpenAiStreamingChatModel.builder().baseUrl(model.baseUrl()).apiKey(key)
                 .modelName(model.modelName()).timeout(Duration.ofSeconds(model.timeoutSeconds()))
-                .logRequests(false).logResponses(false);
+                .returnThinking(true).logRequests(false).logResponses(false);
         if (Boolean.TRUE.equals(model.supportsReasoning())) {
             if (effort != AgentDtos.ReasoningEffort.DEFAULT) builder.reasoningEffort(effort.name().toLowerCase(java.util.Locale.ROOT));
         } else builder.temperature(model.temperature());

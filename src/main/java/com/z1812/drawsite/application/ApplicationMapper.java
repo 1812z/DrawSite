@@ -30,6 +30,4 @@ public interface ApplicationMapper extends BaseMapper<ApplicationEntity> {
     @Update("UPDATE agent_run SET status = 'CANCELLED', finished_at = CURRENT_TIMESTAMP WHERE application_id = #{id} AND status = 'RUNNING'")
     int cancelRuns(String id);
 
-    @Delete("DELETE FROM agent_memory WHERE application_id = #{id}")
-    int deleteMemories(String id);
 }

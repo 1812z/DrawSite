@@ -1,4 +1,4 @@
-package com.z1812.drawsite.agent;
+package com.z1812.drawsite.agent.runtime;
 
 import com.mybatisflex.annotation.Id;
 import com.mybatisflex.annotation.Table;
@@ -20,6 +20,7 @@ public class AgentRun {
     private Boolean memoryEnabled;
     private String status;
     private String errorCode;
+    private String processJson;
     private OffsetDateTime createdAt;
     private OffsetDateTime finishedAt;
 }

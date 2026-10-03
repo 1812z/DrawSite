@@ -33,9 +33,9 @@ public class WorkspaceService {
         Files.createDirectories(directory.resolve("api/tests"));
         Files.writeString(directory.resolve(".gitignore"), "node_modules/\ntarget/\ndist/\n.env\n.env.*\n!.env.example\n", StandardCharsets.UTF_8);
         Files.writeString(directory.resolve("AGENTS.md"), """
-                # 项目共享上下文
+                # 项目记忆
 
-                所有会话使用同一项目工作区。需求与设计以当前项目文件为准。
+                记录项目偏好、已确认的重要决策及背景，需求与设计以当前项目文件为准。
                 - 需求规格：docs/requirements.md
                 - 概要设计：docs/design/overview.md
                 - 详细设计：docs/design/detail.md

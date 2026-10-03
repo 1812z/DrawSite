@@ -18,6 +18,11 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 public class GlobalExceptionHandler {
     private static final Logger log = LoggerFactory.getLogger(GlobalExceptionHandler.class);
 
+    @ExceptionHandler(org.springframework.web.context.request.async.AsyncRequestNotUsableException.class)
+    public void handleDisconnected(org.springframework.web.context.request.async.AsyncRequestNotUsableException exception) {
+        // 连接已失效，不再写入响应
+    }
+
     @ExceptionHandler(NotLoginException.class)
     public ResponseEntity<ApiResponse<Void>> handleNotLogin(NotLoginException exception) {
         return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(ApiResponse.error("UNAUTHORIZED", "请先登录"));
@@ -48,7 +53,12 @@ public class GlobalExceptionHandler {
     }
 
     @ExceptionHandler(Exception.class)
-    public ResponseEntity<ApiResponse<Void>> handleUnexpected(Exception exception) {
+    public ResponseEntity<ApiResponse<Void>> handleUnexpected(Exception exception, jakarta.servlet.http.HttpServletResponse response) {
+        if (org.springframework.web.util.DisconnectedClientHelper.isClientDisconnectedException(exception)) return null;
+        if (response.isCommitted() || (response.getContentType() != null && response.getContentType().startsWith("text/event-stream"))) {
+            log.debug("Streaming response ended", exception);
+            return null;
+        }
         if (exception instanceof ErrorResponse error) {
             String message = switch (error.getStatusCode().value()) {
                 case 400 -> "请求格式或参数不合法";

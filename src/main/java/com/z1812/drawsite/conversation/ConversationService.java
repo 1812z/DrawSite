@@ -1,7 +1,8 @@
 package com.z1812.drawsite.conversation;
 
 import com.z1812.drawsite.application.ApplicationService;
-import com.z1812.drawsite.agent.AgentRunMapper;
+import com.z1812.drawsite.agent.runtime.AgentRunMapper;
+import com.z1812.drawsite.agent.runtime.StopAgentEvent;
 import com.z1812.drawsite.common.api.PageResponse;
 import com.z1812.drawsite.common.exception.BusinessException;
 import org.springframework.http.HttpStatus;
@@ -63,7 +64,7 @@ public class ConversationService {
     @Transactional
     public void delete(String applicationId, String id) {
         lockOwned(applicationId, id);
-        events.publishEvent(new com.z1812.drawsite.agent.StopAgentEvent(applicationId, id));
+        events.publishEvent(new StopAgentEvent(applicationId, id));
         // 先删除任务外键引用，消息随会话级联删除
         runs.deleteConversationRuns(id);
         conversations.deleteById(id);
