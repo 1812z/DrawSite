@@ -1,0 +1,10 @@
+# Copy to application-local.properties in this directory.
+# Run the backend with DrawSite/ as working directory.
+# This example is committed; application-local.properties is ignored by Git.
+spring.datasource.url=jdbc:postgresql://localhost:5432/drawsite
+spring.datasource.username=drawsite
+spring.datasource.password=REPLACE_WITH_YOUR_DATABASE_PASSWORD
+
+# Optional: prefer an absolute workspace path for stable IDE/CLI behavior.
+# drawsite.workspace-root=C:/drawsite-data/workspaces
+# server.port=8080
