@@ -40,6 +40,12 @@ public class ConversationController {
         return ApiResponse.success(conversations.messages(applicationId, id, page, size));
     }
 
+    @DeleteMapping("/{id}")
+    public ApiResponse<Void> delete(@PathVariable String applicationId, @PathVariable String id) {
+        conversations.delete(applicationId, id);
+        return ApiResponse.success(null);
+    }
+
     @PostMapping("/{id}/messages")
     @ResponseStatus(HttpStatus.CREATED)
     public ApiResponse<MessageEntity> addMessage(@PathVariable String applicationId, @PathVariable String id,

@@ -81,4 +81,27 @@ public class WorkspaceService {
     private Path directory(String applicationId) {
         return root.resolve(UUID.fromString(applicationId).toString());
     }
+
+    public void delete(String applicationId) throws IOException {
+        Path directory = directory(applicationId);
+        for (Path current = root; current != null; current = current.getParent()) {
+            if (Files.isSymbolicLink(current)) throw new IOException("Symbolic link in workspace root");
+        }
+        if (!Files.exists(directory, LinkOption.NOFOLLOW_LINKS)) return;
+        // 不跟随符号链接，目录内链接只删除链接本身
+        Files.walkFileTree(directory, new java.nio.file.SimpleFileVisitor<>() {
+            @Override
+            public java.nio.file.FileVisitResult visitFile(Path file, java.nio.file.attribute.BasicFileAttributes attrs) throws IOException {
+                Files.delete(file);
+                return java.nio.file.FileVisitResult.CONTINUE;
+            }
+
+            @Override
+            public java.nio.file.FileVisitResult postVisitDirectory(Path dir, IOException exception) throws IOException {
+                if (exception != null) throw exception;
+                Files.delete(dir);
+                return java.nio.file.FileVisitResult.CONTINUE;
+            }
+        });
+    }
 }

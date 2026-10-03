@@ -1,6 +1,7 @@
 package com.z1812.drawsite.conversation;
 
 import com.z1812.drawsite.application.ApplicationService;
+import com.z1812.drawsite.agent.AgentRunMapper;
 import com.z1812.drawsite.common.api.PageResponse;
 import com.z1812.drawsite.common.exception.BusinessException;
 import org.springframework.http.HttpStatus;
@@ -14,10 +15,15 @@ public class ConversationService {
     private final ApplicationService applications;
     private final ConversationMapper conversations;
     private final MessageMapper messages;
-    public ConversationService(ApplicationService applications, ConversationMapper conversations, MessageMapper messages) {
+    private final AgentRunMapper runs;
+    private final org.springframework.context.ApplicationEventPublisher events;
+    public ConversationService(ApplicationService applications, ConversationMapper conversations, MessageMapper messages,
+                               AgentRunMapper runs, org.springframework.context.ApplicationEventPublisher events) {
         this.applications = applications;
         this.conversations = conversations;
         this.messages = messages;
+        this.runs = runs;
+        this.events = events;
     }
 
     public ConversationEntity requireOwned(String applicationId, String conversationId) {
@@ -34,8 +40,9 @@ public class ConversationService {
         return new PageResponse<>(conversations.list(applicationId, size, (long) (page - 1) * size), conversations.count(applicationId), page, size);
     }
 
+    @Transactional
     public ConversationEntity create(String applicationId, String title) {
-        applications.requireOwned(applicationId);
+        applications.lockOwned(applicationId);
         var conversation = new ConversationEntity();
         conversation.setId(UUID.randomUUID().toString());
         conversation.setApplicationId(applicationId);
@@ -46,11 +53,28 @@ public class ConversationService {
         return conversation;
     }
 
+    @Transactional
     public ConversationEntity rename(String applicationId, String id, String title) {
-        var conversation = requireOwned(applicationId, id);
-        conversation.setTitle(title.strip());
-        conversation.setUpdatedAt(OffsetDateTime.now());
-        conversations.update(conversation);
+        lockOwned(applicationId, id);
+        conversations.rename(id, title.strip());
+        return conversations.selectOneById(id);
+    }
+
+    @Transactional
+    public void delete(String applicationId, String id) {
+        lockOwned(applicationId, id);
+        events.publishEvent(new com.z1812.drawsite.agent.StopAgentEvent(applicationId, id));
+        // 先删除任务外键引用，消息随会话级联删除
+        runs.deleteConversationRuns(id);
+        conversations.deleteById(id);
+    }
+
+    private ConversationEntity lockOwned(String applicationId, String id) {
+        applications.lockOwned(applicationId);
+        var conversation = conversations.lock(id);
+        if (conversation == null || !applicationId.equals(conversation.getApplicationId())) {
+            throw new BusinessException("CONVERSATION_NOT_FOUND", "会话不存在", HttpStatus.NOT_FOUND);
+        }
         return conversation;
     }
 
@@ -61,7 +85,7 @@ public class ConversationService {
 
     @Transactional
     public MessageEntity addMessage(String applicationId, String id, String content) {
-        var conversation = requireOwned(applicationId, id);
+        var conversation = lockOwned(applicationId, id);
         var message = new MessageEntity();
         message.setId(UUID.randomUUID().toString());
         message.setConversationId(id);

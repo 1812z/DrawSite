@@ -14,4 +14,22 @@ public interface ApplicationMapper extends BaseMapper<ApplicationEntity> {
 
     @Select("SELECT * FROM application WHERE id = #{id} AND owner_user_id = #{owner}")
     ApplicationEntity findOwned(@Param("id") String id, @Param("owner") String owner);
+
+    @Select("SELECT * FROM application WHERE id = #{id} AND owner_user_id = #{owner} FOR UPDATE")
+    ApplicationEntity lockOwned(@Param("id") String id, @Param("owner") String owner);
+
+    @Select("SELECT COUNT(*) FROM agent_run WHERE application_id = #{id} AND status = 'RUNNING'")
+    long activeRuns(String id);
+
+    @Select("SELECT * FROM application WHERE id = #{id} FOR UPDATE")
+    ApplicationEntity lockById(String id);
+
+    @Delete("DELETE FROM agent_run WHERE application_id = #{id}")
+    int deleteRuns(String id);
+
+    @Update("UPDATE agent_run SET status = 'CANCELLED', finished_at = CURRENT_TIMESTAMP WHERE application_id = #{id} AND status = 'RUNNING'")
+    int cancelRuns(String id);
+
+    @Delete("DELETE FROM agent_memory WHERE application_id = #{id}")
+    int deleteMemories(String id);
 }

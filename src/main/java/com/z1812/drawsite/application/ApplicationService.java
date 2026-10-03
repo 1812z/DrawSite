@@ -20,19 +20,49 @@ public class ApplicationService {
     private final RevisionMapper revisions;
     private final WorkspaceService workspace;
     private final TransactionTemplate transactions;
+    private final org.springframework.context.ApplicationEventPublisher events;
 
     public ApplicationService(ApplicationMapper applications, RevisionMapper revisions,
-                              WorkspaceService workspace, TransactionTemplate transactions) {
+                               WorkspaceService workspace, TransactionTemplate transactions,
+                               org.springframework.context.ApplicationEventPublisher events) {
         this.applications = applications;
         this.revisions = revisions;
         this.workspace = workspace;
         this.transactions = transactions;
+        this.events = events;
     }
 
     public ApplicationEntity requireOwned(String id) {
         var application = applications.findOwned(id, StpUtil.getLoginIdAsString());
         if (application == null) throw new BusinessException("APPLICATION_NOT_FOUND", "应用不存在", HttpStatus.NOT_FOUND);
         return application;
+    }
+
+    public ApplicationEntity lockOwned(String id) {
+        var application = applications.lockOwned(id, StpUtil.getLoginIdAsString());
+        if (application == null) throw new BusinessException("APPLICATION_NOT_FOUND", "应用不存在", HttpStatus.NOT_FOUND);
+        return application;
+    }
+
+    public void delete(String id) {
+        transactions.executeWithoutResult(status -> {
+            var application = lockOwned(id);
+            if ("INITIALIZING".equals(application.getStatus())) {
+                throw new BusinessException("APPLICATION_BUSY", "请等待初始化完成后再删除", HttpStatus.CONFLICT);
+            }
+            events.publishEvent(new com.z1812.drawsite.agent.StopAgentEvent(id, null));
+            applications.cancelRuns(id);
+            try {
+                workspace.delete(id);
+            } catch (java.io.IOException exception) {
+                log.warn("Workspace cleanup failed, application={}", id);
+                throw new BusinessException("WORKSPACE_DELETE_FAILED", "项目目录清理失败，请重试", HttpStatus.INTERNAL_SERVER_ERROR);
+            }
+            // 清除任务和记忆外键，再级联清理版本、会话与消息
+            applications.deleteRuns(id);
+            applications.deleteMemories(id);
+            applications.deleteById(id);
+        });
     }
 
     public PageResponse<ApplicationView> list(int page, int size) {

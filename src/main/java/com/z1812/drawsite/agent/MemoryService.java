@@ -6,6 +6,7 @@ import com.z1812.drawsite.common.api.PageResponse;
 import com.z1812.drawsite.common.exception.BusinessException;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import java.time.OffsetDateTime;
 import java.util.UUID;
 
@@ -22,8 +23,9 @@ public class MemoryService {
         return new PageResponse<>(memories.list(owner, applicationId, size, (long) (page - 1) * size),
                 memories.count(owner, applicationId), page, size);
     }
+    @Transactional
     public MemoryEntity create(String applicationId, AgentDtos.MemoryRequest request) {
-        applications.requireOwned(applicationId);
+        applications.lockOwned(applicationId);
         var memory = new MemoryEntity();
         memory.setId(UUID.randomUUID().toString());
         memory.setOwnerUserId(StpUtil.getLoginIdAsString());

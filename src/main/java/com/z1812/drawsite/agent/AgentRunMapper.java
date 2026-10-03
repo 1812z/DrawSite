@@ -19,4 +19,7 @@ public interface AgentRunMapper extends BaseMapper<AgentRun> {
 
     @Update("UPDATE agent_run SET status = 'FAILED', error_code = 'SERVER_RESTARTED', finished_at = CURRENT_TIMESTAMP WHERE status = 'RUNNING'")
     int recoverInterrupted();
+
+    @Delete("DELETE FROM agent_run WHERE conversation_id = #{conversationId}")
+    int deleteConversationRuns(String conversationId);
 }

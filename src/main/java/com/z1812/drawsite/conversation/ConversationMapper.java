@@ -13,4 +13,13 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
 
     @Update("UPDATE conversation SET title = #{title} WHERE id = #{id} AND title = '新建会话'")
     int autoTitle(@Param("id") String id, @Param("title") String title);
+
+    @Select("SELECT * FROM conversation WHERE id = #{id} FOR UPDATE")
+    ConversationEntity lock(String id);
+
+    @Update("UPDATE conversation SET updated_at = CURRENT_TIMESTAMP WHERE id = #{id}")
+    int touch(String id);
+
+    @Update("UPDATE conversation SET title = #{title}, updated_at = CURRENT_TIMESTAMP WHERE id = #{id}")
+    int rename(@Param("id") String id, @Param("title") String title);
 }

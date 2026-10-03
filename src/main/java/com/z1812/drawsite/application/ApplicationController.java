@@ -31,6 +31,12 @@ public class ApplicationController {
         return ApiResponse.success(ApplicationView.from(applications.requireOwned(id)));
     }
 
+    @DeleteMapping("/{id}")
+    public ApiResponse<Void> delete(@PathVariable String id) {
+        applications.delete(id);
+        return ApiResponse.success(null);
+    }
+
     @PutMapping("/{id}")
     public ApiResponse<ApplicationView> update(@PathVariable String id, @Valid @RequestBody ApplicationRequest request) {
         return ApiResponse.success(applications.update(id, request));
