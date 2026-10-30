@@ -33,4 +33,10 @@ public class AgentModelFactory {
                 .timeout(Duration.ofSeconds(Math.min(20, model.timeoutSeconds()))).maxRetries(0)
                 .logRequests(false).logResponses(false).build();
     }
+
+    public OpenAiChatModel contextModel(ModelConfig model, String key) {
+        return OpenAiChatModel.builder().baseUrl(model.baseUrl()).apiKey(key).modelName(model.modelName())
+                .timeout(Duration.ofSeconds(model.timeoutSeconds())).maxRetries(0).maxCompletionTokens(6000)
+                .logRequests(false).logResponses(false).build();
+    }
 }

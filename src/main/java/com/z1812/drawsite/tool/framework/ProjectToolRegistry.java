@@ -21,7 +21,7 @@ public class ProjectToolRegistry {
     public List<ToolView> catalog() {
         var result = new ArrayList<ToolView>();
         modules.forEach(module -> result.add(new ToolView(module.id(), module.name(), module.description(), true,
-                Set.of("file", "clarification", "progress").contains(module.id()))));
+                Set.of("file", "clarification", "progress", "git").contains(module.id()))));
         return result.stream().sorted(Comparator.comparing(ToolView::name)).toList();
     }
 
@@ -56,7 +56,7 @@ public class ProjectToolRegistry {
             if (!module.available(context)) continue;
             Object tools = module.bind(context);
             var moduleSpecs = ToolSpecifications.toolSpecificationsFrom(tools).stream()
-                    .filter(spec -> selected == null || Set.of("file", "clarification", "progress").contains(module.id()) || selected.contains(module.id()) || selected.contains(spec.name())).toList();
+                    .filter(spec -> selected == null || Set.of("file", "clarification", "progress", "git").contains(module.id()) || selected.contains(module.id()) || selected.contains(spec.name())).toList();
             specs.addAll(moduleSpecs);
             for (var method : tools.getClass().getMethods()) {
                 var annotation = method.getAnnotation(Tool.class);

@@ -31,7 +31,7 @@ public class WorkspaceService {
         Files.createDirectory(directory);
         Files.createDirectories(directory.resolve("docs/design"));
         Files.createDirectories(directory.resolve("api/tests"));
-        Files.writeString(directory.resolve(".gitignore"), "node_modules/\ntarget/\ndist/\n.env\n.env.*\n!.env.example\n", StandardCharsets.UTF_8);
+        Files.writeString(directory.resolve(".gitignore"), "node_modules/\ntarget/\ndist/\n.env\n.env.*\n!.env.example\n" + GitFilePolicy.IGNORE, StandardCharsets.UTF_8);
         Files.writeString(directory.resolve("AGENTS.md"), """
                 # 项目记忆
 
@@ -46,9 +46,9 @@ public class WorkspaceService {
                 ## 维护规则
                 先分析需求，再维护设计，最后编码；变更接口时同步更新契约、说明和测试用例。
                 Markdown 内容自由组织，不把对话历史当作需求事实。
-                progress.json 保持 schemaVersion=1.0，features 为数组；每项包含稳定 id、title、
-                status、acceptanceCriteria（字符串数组），可选 notes。状态仅允许 TODO、IN_PROGRESS、
-                READY_FOR_VERIFICATION、BLOCKED；实现后标为待验证，不自行宣称测试通过。
+                progress.json 保持 schemaVersion=1.0，features 为数组；每项必填唯一 id、title、status，
+                可选 acceptanceCriteria（字符串数组）及 notes。状态仅允许 TODO（未完成）、
+                IN_PROGRESS（进行中）、DONE（完成）；完成仅代表节点开发完成，不代表测试通过。
                 不伪造平台测试结果；实际验证由平台执行器负责。不要向项目文件写入密钥或凭据。
                 """, StandardCharsets.UTF_8);
         Files.writeString(directory.resolve("docs/requirements.md"), "# 需求规格说明书\n\n等待需求分析。\n", StandardCharsets.UTF_8);

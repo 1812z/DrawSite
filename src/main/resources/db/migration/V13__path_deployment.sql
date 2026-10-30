@@ -1,0 +1,13 @@
+ALTER TABLE managed_container ADD COLUMN host_port INTEGER UNIQUE;
+ALTER TABLE managed_container ADD COLUMN secondary_host_port INTEGER UNIQUE;
+ALTER TABLE managed_container ADD COLUMN public_host VARCHAR(253);
+DELETE FROM application_deployment;
+ALTER TABLE application_deployment ALTER COLUMN container_id DROP NOT NULL;
+ALTER TABLE application_deployment ADD COLUMN application_id VARCHAR(36) REFERENCES application(id);
+ALTER TABLE application_deployment ALTER COLUMN application_id SET NOT NULL;
+ALTER TABLE application_deployment ADD COLUMN type VARCHAR(16) NOT NULL DEFAULT 'SERVICE';
+ALTER TABLE application_deployment RENAME COLUMN hostname TO url;
+ALTER TABLE application_deployment ALTER COLUMN url TYPE VARCHAR(2048);
+ALTER TABLE application_deployment DROP COLUMN dns_record_id;
+CREATE UNIQUE INDEX idx_static_application ON application_deployment(application_id) WHERE type='STATIC';
+UPDATE infrastructure_config SET content = ((content::jsonb - 'network' - 'baseDomain' - 'publicIp' - 'dnsPodToken' - 'https' - 'entryPoint' - 'certificateResolver') || jsonb_build_object('publicHost', COALESCE(NULLIF(content::jsonb->>'publicIp',''), 'localhost'), 'portStart',40001,'portEnd',49999))::text;

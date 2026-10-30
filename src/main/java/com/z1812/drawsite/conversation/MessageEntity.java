@@ -13,6 +13,8 @@ public class MessageEntity {
     private String conversationId;
     private String role;
     private String content;
+    private String error;
+    private String kind;
     @com.fasterxml.jackson.annotation.JsonIgnore
     private String processJson;
     public java.util.List<com.z1812.drawsite.agent.runtime.RunStep> getSteps() {

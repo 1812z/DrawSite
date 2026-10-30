@@ -131,7 +131,8 @@ public class ClarificationService {
     private List<Question> decodeQuestions(String value) { return json.readValue(value, json.getTypeFactory().constructCollectionType(List.class, Question.class)); }
     private List<Answer> decodeAnswers(String value) { return value == null ? List.of() : json.readValue(value, json.getTypeFactory().constructCollectionType(List.class, Answer.class)); }
     private View view(ClarificationEntity item) {
-        return new View(item.getId(), item.getRunId(), item.getConversationId(), decodeQuestions(item.getQuestionsJson()),
+        var run = runs.selectOneById(item.getRunId());
+        return new View(item.getId(), item.getRunId(), item.getConversationId(), run == null ? null : run.getUserMessageId(), decodeQuestions(item.getQuestionsJson()),
                 decodeAnswers(item.getAnswersJson()), item.getStatus(), item.getCreatedAt(), item.getAnsweredAt());
     }
 }

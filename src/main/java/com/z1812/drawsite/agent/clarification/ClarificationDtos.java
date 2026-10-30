@@ -13,6 +13,6 @@ public final class ClarificationDtos {
                          @NotNull @Size(max = 5) List<@NotBlank @Size(max = 200) String> selectedOptions,
                          @Size(max = 4000) String customText) {}
     public record Reply(@NotNull @Size(min = 1, max = 3) List<@Valid Answer> answers) {}
-    public record View(String id, String runId, String conversationId, List<Question> questions,
+    public record View(String id, String runId, String conversationId, String userMessageId, List<Question> questions,
                        List<Answer> answers, String status, OffsetDateTime createdAt, OffsetDateTime answeredAt) {}
 }

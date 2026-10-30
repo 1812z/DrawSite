@@ -71,6 +71,9 @@ public class ProjectFileService {
         return new FileContent(path, slice, hash(content), lines.length, startLine, truncated);
     }
 
+    public String readText(String appId, String path) throws IOException { return text(resolve(appId, path, false)); }
+    public boolean exists(String appId, String path) throws IOException { return Files.isRegularFile(resolve(appId, path, false), LinkOption.NOFOLLOW_LINKS); }
+
     public SearchResult search(String appId, String directory, String query) throws IOException {
         if (query == null || query.isBlank() || query.length() > 200) throw invalid("搜索文本不能为空且最多200字符");
         var listing = list(appId, directory, 5);
@@ -104,6 +107,9 @@ public class ProjectFileService {
     public Change writeBytes(String appId, String path, byte[] content, String expectedHash) throws IOException {
         if (content == null || content.length > MAX_BYTES) throw invalid("资源超过2MB");
         Path file = resolve(appId, path, false);
+        if (file.getFileName().toString().equals("openapi.json") || file.getFileName().toString().endsWith(".test.json")) {
+            return write(appId, path, new String(content, StandardCharsets.UTF_8), expectedHash);
+        }
         if (Set.of("agents.md", "progress.json").contains(file.getFileName().toString().toLowerCase(Locale.ROOT))) throw invalid("项目记忆和进度只允许文本编辑");
         if ("NEW".equals(expectedHash)) {
             if (Files.exists(file, LinkOption.NOFOLLOW_LINKS)) throw invalid("文件已存在");
@@ -231,7 +237,13 @@ public class ProjectFileService {
     }
 
     private void save(Path file, String content) throws IOException {
-        if (file.getFileName().toString().equalsIgnoreCase("progress.json")) com.z1812.drawsite.tool.builtin.ProgressToolModule.validate(content);
+        if (file.getFileName().toString().equalsIgnoreCase("progress.json")) ProgressDocument.parse(content);
+        if (file.getFileName().toString().equals("openapi.json")) com.z1812.drawsite.testing.ApiDocuments.contract(content);
+        if (file.getFileName().toString().endsWith(".test.json")) {
+            Path contract = file.getParent().getParent().resolve("openapi.json");
+            if (!Files.isRegularFile(contract, LinkOption.NOFOLLOW_LINKS) || Files.isSymbolicLink(contract)) throw invalid("请先创建API契约");
+            com.z1812.drawsite.testing.ApiDocuments.suite(content, com.z1812.drawsite.testing.ApiDocuments.contract(text(contract)));
+        }
         if (content == null || content.indexOf('\0') >= 0 || content.getBytes(StandardCharsets.UTF_8).length > MAX_BYTES) throw invalid("文本不合法或超过2MB");
         Files.createDirectories(file.getParent());
         Path temporary = Files.createTempFile(file.getParent(), ".drawsite-", ".tmp");

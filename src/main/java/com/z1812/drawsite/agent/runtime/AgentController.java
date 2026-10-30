@@ -13,6 +13,23 @@ public class AgentController {
     private final AgentService agent;
     public AgentController(AgentService agent) { this.agent = agent; }
 
+    public record CompressRequest(@NotBlank String modelId, boolean memoryEnabled) {}
+    @PostMapping(value = "/conversations/{conversationId}/context/compress/events", produces = "text/event-stream")
+    public SseEmitter compressEvents(@PathVariable String applicationId, @PathVariable String conversationId,
+                                     @Valid @RequestBody CompressRequest request) {
+        return agent.compressEvents(applicationId, conversationId, request.modelId(), request.memoryEnabled());
+    }
+    @GetMapping("/conversations/{conversationId}/context")
+    public ApiResponse<ConversationContextService.View> context(@PathVariable String applicationId, @PathVariable String conversationId,
+                                                               @RequestParam(defaultValue = "true") boolean memoryEnabled) {
+        return ApiResponse.success(agent.context(applicationId, conversationId, memoryEnabled));
+    }
+    @PostMapping("/conversations/{conversationId}/context/compress")
+    public ApiResponse<ConversationContextService.View> compress(@PathVariable String applicationId, @PathVariable String conversationId,
+                                                                @Valid @RequestBody CompressRequest request) {
+        return ApiResponse.success(agent.compress(applicationId, conversationId, request.modelId(), request.memoryEnabled()));
+    }
+
     @PostMapping("/conversations/{conversationId}/runs")
     @ResponseStatus(HttpStatus.ACCEPTED)
     public ApiResponse<AgentDtos.RunView> start(@PathVariable String applicationId, @PathVariable String conversationId,
