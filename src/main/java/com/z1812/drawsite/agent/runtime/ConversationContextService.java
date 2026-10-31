@@ -22,6 +22,7 @@ public class ConversationContextService {
     private final Set<String> busy = ConcurrentHashMap.newKeySet();
     private final Map<String, Integer> liveTokens = new ConcurrentHashMap<>();
     private final Set<String> liveCompression = ConcurrentHashMap.newKeySet();
+    private final Set<String> summarizing = ConcurrentHashMap.newKeySet();
     private final Map<String, String> compressionText = new ConcurrentHashMap<>();
     private record CachedUsage(int tokens, boolean hasSummary, long expiresAt) {}
     private final Map<String, CachedUsage> usageCache = new ConcurrentHashMap<>();
@@ -91,7 +92,7 @@ public class ConversationContextService {
             usageCache.put(scope(id, memory), cached);
         }
         int used = live != null ? live : cached.tokens();
-        return new View(used, compressor.budget(), true, busy(id) || liveCompression.contains(id), cached.hasSummary(), compressionText.getOrDefault(scope(id, memory), ""));
+        return new View(used, compressor.budget(), true, summarizing.contains(scope(id, memory)) || liveCompression.contains(id), cached.hasSummary(), compressionText.getOrDefault(scope(id, memory), ""));
     }
     public List<ChatMessage> prepare(String id, boolean memory, ModelConfig model, String key,
                                       int reserved, boolean force, BooleanSupplier stopped) {
@@ -108,6 +109,7 @@ public class ConversationContextService {
             StringBuilder source = new StringBuilder();
             for (var turn : turns.subList(0, count)) for (var message : turn.messages()) source.append(message).append('\n');
             String scope = scope(id, memory);
+            summarizing.add(scope);
             compressionText.put(scope, "");
             String summary = compressor.summarize(models.contextModel(model, key), checkpoint == null ? "" : checkpoint.summary(), source.toString(), stopped,
                     (input, progress) -> streamSummary(model, key, input, stopped, progress), text -> compressionText.put(scope, text));
@@ -122,7 +124,7 @@ public class ConversationContextService {
             usageCache.remove(scope);
             compressionText.remove(scope);
             return flatten(new ContextMapper.Checkpoint(turns.get(count - 1).id(), summary), turns.subList(count, turns.size()));
-        } finally { busy.remove(id); compressionText.remove(scope(id, memory)); }
+        } finally { summarizing.remove(scope(id, memory)); busy.remove(id); compressionText.remove(scope(id, memory)); }
     }
     private void saveCompressionMessage(String id, String content, String kind, String role) {
         var message = new MessageEntity();

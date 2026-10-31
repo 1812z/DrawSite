@@ -6,7 +6,7 @@ import java.util.List;
 
 @Mapper
 public interface MessageMapper extends BaseMapper<MessageEntity> {
-    @Select("SELECT * FROM conversation_message WHERE conversation_id = #{conversationId} ORDER BY created_at, id LIMIT #{size} OFFSET #{offset}")
+    @Select("SELECT * FROM (SELECT * FROM conversation_message WHERE conversation_id = #{conversationId} ORDER BY created_at DESC, id DESC LIMIT #{size} OFFSET #{offset}) recent ORDER BY created_at,id")
     List<MessageEntity> list(@Param("conversationId") String conversationId, @Param("size") int size, @Param("offset") long offset);
     @Select("SELECT COUNT(*) FROM conversation_message WHERE conversation_id = #{conversationId}")
     long count(String conversationId);

@@ -11,7 +11,8 @@ import java.nio.file.*;
 @RestController
 public class PublishedSiteController {
     private final DeploymentService deployments;
-    public PublishedSiteController(DeploymentService deployments) { this.deployments = deployments; }
+    private final PreviewAccess previews;
+    public PublishedSiteController(DeploymentService deployments, PreviewAccess previews) { this.deployments = deployments; this.previews = previews; }
 
     @GetMapping("/sites/{applicationId}")
     public ResponseEntity<Void> redirect(@PathVariable String applicationId) {
@@ -22,9 +23,18 @@ public class PublishedSiteController {
 
     @GetMapping("/sites/{applicationId}/**")
     public ResponseEntity<FileSystemResource> file(@PathVariable String applicationId, HttpServletRequest request) {
-        Path root = deployments.siteRoot(applicationId).toAbsolutePath().normalize();
         String path = (String) request.getAttribute(HandlerMapping.PATH_WITHIN_HANDLER_MAPPING_ATTRIBUTE);
         String relative = path.substring(("/sites/" + applicationId + "/").length());
+        Path root;
+        if (relative.startsWith("__preview/")) {
+            root = previews.site(applicationId, request);
+            if (root == null) throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+            relative = relative.substring("__preview/".length());
+            for (String part : relative.split("/")) if (part.startsWith(".") || java.util.Set.of("node_modules", "AGENTS.md", "progress.json", "docs", "api").contains(part)) throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+            String lower = relative.toLowerCase(java.util.Locale.ROOT);
+            if (lower.endsWith(".key") || lower.endsWith(".pem") || lower.endsWith(".sql") || lower.endsWith(".java") || lower.endsWith(".py")) throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+        } else root = deployments.siteRoot(applicationId);
+        root = root.toAbsolutePath().normalize();
         Path file = root.resolve(relative).normalize();
         if (!file.startsWith(root)) throw new ResponseStatusException(HttpStatus.NOT_FOUND);
         for (Path p = file; p != null; p = p.getParent()) if (Files.isSymbolicLink(p)) throw new ResponseStatusException(HttpStatus.NOT_FOUND);

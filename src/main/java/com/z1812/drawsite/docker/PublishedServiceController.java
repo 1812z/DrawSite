@@ -15,11 +15,12 @@ public class PublishedServiceController {
     private static final Set<String> HOP = Set.of("connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailer", "transfer-encoding", "upgrade", "host", "content-length", "expect");
     private final ContainerMapper containers;
     private final DeploymentMapper deployments;
+    private final PreviewAccess previews;
     private final String dockerHost;
     private final HttpClient client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).followRedirects(HttpClient.Redirect.NEVER).build();
-    public PublishedServiceController(ContainerMapper containers, DeploymentMapper deployments,
+    public PublishedServiceController(ContainerMapper containers, DeploymentMapper deployments, PreviewAccess previews,
                                       @Value("${drawsite.container-host:host.docker.internal}") String dockerHost) {
-        this.containers = containers; this.deployments = deployments; this.dockerHost = dockerHost;
+        this.containers = containers; this.deployments = deployments; this.previews = previews; this.dockerHost = dockerHost;
     }
     @GetMapping("/services/{id}/{slot:[12]}")
     public void redirect(@PathVariable String id, @PathVariable int slot, HttpServletResponse response) {
@@ -30,7 +31,7 @@ public class PublishedServiceController {
     public void proxy(@PathVariable String id, @PathVariable int slot, HttpServletRequest request, HttpServletResponse response) throws Exception {
         var container = containers.selectOneById(id);
         var deployment = deployments.forContainer(id);
-        if (container == null || deployment == null || !"ONLINE".equals(deployment.getStatus()) || !"RUNNING".equals(container.getStatus())) throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+        if (container == null || !"RUNNING".equals(container.getStatus()) || ((deployment == null || !"ONLINE".equals(deployment.getStatus())) && !previews.allowed(id, request))) throw new ResponseStatusException(HttpStatus.NOT_FOUND);
         Integer port = slot == 1 ? container.getHostPort() : container.getSecondaryHostPort();
         if (port == null) throw new ResponseStatusException(HttpStatus.NOT_FOUND);
         if (!Set.of("GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS").contains(request.getMethod())) throw new ResponseStatusException(HttpStatus.METHOD_NOT_ALLOWED);
@@ -45,6 +46,12 @@ public class PublishedServiceController {
         var names = request.getHeaderNames();
         while (names.hasMoreElements()) {
             String name = names.nextElement();
+            if (name.equalsIgnoreCase("Cookie")) {
+                String cookies = request.getHeader(name);
+                cookies = java.util.Arrays.stream(cookies.split(";\\s*")).filter(c -> !c.startsWith("drawsite_preview=")).collect(java.util.stream.Collectors.joining("; "));
+                if (!cookies.isBlank()) builder.header("Cookie", cookies);
+                continue;
+            }
             if (connectionHeaders.contains(name.toLowerCase(Locale.ROOT)) || name.toLowerCase(Locale.ROOT).startsWith("x-forwarded-")) continue;
             var values = request.getHeaders(name);
             while (values.hasMoreElements()) builder.header(name, values.nextElement());
