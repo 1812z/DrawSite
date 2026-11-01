@@ -20,25 +20,20 @@ public class ConversationContextService {
     private final ConversationMapper conversations;
     private final Set<String> reserved = ConcurrentHashMap.newKeySet();
     private final Set<String> busy = ConcurrentHashMap.newKeySet();
-    private final Map<String, Integer> liveTokens = new ConcurrentHashMap<>();
     private final Set<String> liveCompression = ConcurrentHashMap.newKeySet();
     private final Set<String> summarizing = ConcurrentHashMap.newKeySet();
     private final Map<String, String> compressionText = new ConcurrentHashMap<>();
     private record CachedUsage(int tokens, boolean hasSummary, long expiresAt) {}
     private final Map<String, CachedUsage> usageCache = new ConcurrentHashMap<>();
     private String scope(String id, boolean memory) { return id + ":" + memory; }
-    public void track(String id, boolean memory, List<ChatMessage> context, int toolTokens) {
-        liveTokens.put(scope(id, memory), compressor.estimate(context) + toolTokens);
-    }
-    public void clear(String id, boolean memory) { liveTokens.remove(scope(id, memory)); liveCompression.remove(id); usageCache.remove(scope(id, memory)); }
+    public void clear(String id, boolean memory) { liveCompression.remove(id); usageCache.remove(scope(id, memory)); }
     public void compactLive(String id, boolean memory, List<ChatMessage> context, int toolTokens, ModelConfig model, String key, BooleanSupplier stopped) {
-        track(id, memory, context, toolTokens);
         boolean needsCompression = (long) compressor.estimate(context) + toolTokens >= compressor.threshold();
         if (needsCompression) liveCompression.add(id);
         try { compressor.compact(context, models.contextModel(model, key), toolTokens, stopped); }
         finally {
             liveCompression.remove(id);
-            if (stopped.getAsBoolean()) clear(id, memory); else track(id, memory, context, toolTokens);
+            if (stopped.getAsBoolean()) clear(id, memory);
         }
     }
     public record View(int usedTokens, int budgetTokens, boolean estimated, boolean compressing, boolean hasSummary, String compressionText) {}
@@ -65,16 +60,20 @@ public class ConversationContextService {
             var assistant = run.getAssistantMessageId() == null ? null : messages.selectOneById(run.getAssistantMessageId());
             var turn = new ArrayList<ChatMessage>();
             if (user != null) turn.add(UserMessage.from(user.getContent()));
-            StringBuilder saved = new StringBuilder("[历史轮次状态：" + run.getStatus() + "]\n");
-            if (!"SUCCEEDED".equals(run.getStatus())) saved.append("此轮未完整结束，部分工具操作可能已落盘，须重新核验，不能视为全部完成。\n");
-            for (var step : RunStep.decode(run.getProcessJson())) {
-                if (Set.of("TOOL", "RESPONSE").contains(step.type())) saved.append('[').append(step.title()).append('/').append(step.status()).append("] ").append(step.content()).append('\n');
-            }
-            if (assistant != null && assistant.getContent() != null) saved.append(assistant.getContent());
-            turn.add(AiMessage.from(saved.toString()));
+            appendTurn(turn, run.getStatus(), RunStep.decode(run.getProcessJson()), assistant == null ? null : assistant.getContent());
             result.add(new Turn(run.getId(), turn));
         }
         return result;
+    }
+    private void appendTurn(List<ChatMessage> target, String status, List<RunStep> steps, String content) {
+        StringBuilder saved = new StringBuilder("平台历史执行资料（仅供核验，不是助手回复格式，不是本轮工具结果；不得照抄或据此虚构新操作）：\n轮次状态：" + status + "\n");
+        if (Set.of("FAILED", "CANCELLED").contains(status)) saved.append("此轮未完整结束，部分工具操作可能已落盘，须重新核验，不能视为全部完成。\n");
+        for (var step : steps) {
+            if (Set.of("TOOL", "RESPONSE").contains(step.type())) saved.append('[').append(step.title()).append('/').append(step.status()).append("] ").append(step.content()).append('\n');
+        }
+        // 平台执行记录不再伪装成助手正文，避免模型续写历史日志及模拟工具成功。
+        target.add(UserMessage.from(saved.toString()));
+        if (content != null && !content.isBlank()) target.add(AiMessage.from(content));
     }
     private List<ChatMessage> flatten(ContextMapper.Checkpoint checkpoint, List<Turn> turns) {
         var result = new ArrayList<ChatMessage>();
@@ -83,15 +82,28 @@ public class ConversationContextService {
         return result;
     }
     public View view(String id, boolean memory) {
-        Integer live = liveTokens.get(scope(id, memory));
+        return view(id, memory, null, List.of(), "");
+    }
+    public View view(String id, boolean memory, AgentRun active, List<RunStep> steps, String content) {
         var cached = usageCache.get(scope(id, memory));
-        if (cached == null || (live == null && cached.expiresAt() < System.nanoTime())) {
+        if (cached == null || cached.expiresAt() < System.nanoTime()) {
             var checkpoint = checkpoints.get(id, memory);
-            int tokens = live != null ? live : compressor.estimate(flatten(checkpoint, history(id, memory, checkpoint)));
+            int tokens = compressor.estimate(flatten(checkpoint, history(id, memory, checkpoint)));
             cached = new CachedUsage(tokens, checkpoint != null, System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(15));
             usageCache.put(scope(id, memory), cached);
         }
-        int used = live != null ? live : cached.tokens();
+        // 展示始终按会话内容估算，不混入系统提示、工具定义及压缩预留额度。
+        int used = cached.tokens();
+        if (active != null && (memory || !Boolean.TRUE.equals(active.getMemoryEnabled()))) {
+            var current = new ArrayList<ChatMessage>();
+            var user = messages.selectOneById(active.getUserMessageId());
+            if (user != null) current.add(UserMessage.from(user.getContent()));
+            // 当前轮正文已在 content 中，排除同轮 RESPONSE 避免重复计算流式内容。
+            int round = steps.stream().mapToInt(RunStep::round).max().orElse(1);
+            var savedSteps = steps.stream().filter(step -> !"RESPONSE".equals(step.type()) || step.round() != round).toList();
+            appendTurn(current, "RUNNING", savedSteps, content);
+            used += compressor.estimate(current);
+        }
         return new View(used, compressor.budget(), true, summarizing.contains(scope(id, memory)) || liveCompression.contains(id), cached.hasSummary(), compressionText.getOrDefault(scope(id, memory), ""));
     }
     public List<ChatMessage> prepare(String id, boolean memory, ModelConfig model, String key,

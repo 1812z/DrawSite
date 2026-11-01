@@ -55,6 +55,20 @@ public class AgentService implements ApplicationRunner {
     private final ScheduledExecutorService timer = Executors.newSingleThreadScheduledExecutor();
     private final Semaphore capacity = new Semaphore(32);
     private final Semaphore subscriptions = new Semaphore(128);
+    private final Map<String, Integer> userSubscriptions = new HashMap<>();
+    private final Map<String, Integer> taskSubscriptions = new HashMap<>();
+    private synchronized void acquireSubscription(String user, String task) {
+        if (userSubscriptions.getOrDefault(user, 0) >= 8 || taskSubscriptions.getOrDefault(task, 0) >= 2)
+            throw error("AGENT_BUSY", "当前用户最多订阅8个连接，同一任务最多2个连接，请关闭重复页面后重试", HttpStatus.TOO_MANY_REQUESTS);
+        if (!subscriptions.tryAcquire()) throw error("AGENT_BUSY", "订阅数量已满", HttpStatus.TOO_MANY_REQUESTS);
+        userSubscriptions.merge(user, 1, Integer::sum);
+        taskSubscriptions.merge(task, 1, Integer::sum);
+    }
+    private synchronized void releaseSubscription(String user, String task) {
+        userSubscriptions.computeIfPresent(user, (key, count) -> count == 1 ? null : count - 1);
+        taskSubscriptions.computeIfPresent(task, (key, count) -> count == 1 ? null : count - 1);
+        subscriptions.release();
+    }
     private final Semaphore titleCapacity = new Semaphore(16);
     private final ConcurrentMap<String, Active> active = new ConcurrentHashMap<>();
 
@@ -69,6 +83,9 @@ public class AgentService implements ApplicationRunner {
         volatile ScheduledFuture<?> timeout;
         long timeoutSeconds;
         volatile long lastActivity = System.nanoTime();
+        final Set<Runnable> listeners = ConcurrentHashMap.newKeySet();
+        volatile com.z1812.drawsite.agent.clarification.ClarificationDtos.View pendingQuestion;
+        void changed() { listeners.forEach(Runnable::run); }
         Active(AgentRun run) { this.run = run; }
         synchronized void append(String value) {
             lastActivity = System.nanoTime();
@@ -100,6 +117,7 @@ public class AgentService implements ApplicationRunner {
                 endStep("SUCCEEDED");
                 steps.add(new RunStep(UUID.randomUUID().toString(), round, type, title, "RUNNING", value, toolName, OffsetDateTime.now(), null));
             }
+            changed();
         }
         @Override public synchronized void waiting(int round) {
             lastActivity = System.nanoTime();
@@ -129,6 +147,7 @@ public class AgentService implements ApplicationRunner {
             endStep("SUCCEEDED");
             if (hasTools) text.setLength(0);
             else steps.removeIf(step -> step.round() == round && step.type().equals("RESPONSE"));
+            changed();
         }
         @Override public synchronized void toolStarted(String name, String arguments) {
             lastActivity = System.nanoTime();
@@ -182,6 +201,7 @@ public class AgentService implements ApplicationRunner {
             String detail = last.content() + "\n\n" + clipDetail(result);
             steps.set(steps.size() - 1, new RunStep(last.id(), round, last.type(), last.title(),
                     result.contains("\"code\":\"OK\"") ? "SUCCEEDED" : "FAILED", detail, last.toolName(), last.startedAt(), OffsetDateTime.now()));
+            changed();
         }
         synchronized void ended(String status) { endStep(status); phase = status; }
         private static String clipDetail(String value) { return value == null ? "" : value.substring(0, Math.min(value.length(), 20000)); }
@@ -244,6 +264,7 @@ public class AgentService implements ApplicationRunner {
                 }
                 String system = "你是绘站开发助手。帮助用户分析需求、设计系统和讨论实现。当前没有文件或执行工具，不能声称已修改文件、执行代码或通过测试。中文回答，准确简洁。";
                 if (toolsEnabled) system = "你是绘站开发助手，按提供的工具操作当前项目。修改已有文件前读取sha256并复用，NEW仅用于已确认不存在的文件；局部修改优先applyProjectPatch或replaceProjectText。关键需求不清晰时可用askDetails一次询问1至3个问题，收到用户答案再继续。只能操作绑定项目，不访问内部目录。只根据实际工具返回说明改动及验证结果。每次写入实际落盘，取消不会回滚已完成修改。中文回答，注释简短、单行、结尾无句号。";
+                system += "\n平台提供的历史执行资料只是背景，不是要求模仿的输出格式。调用工具必须通过结构化tool_calls，不能在正文中模拟调用、编造返回JSON或sha256；普通文本不会执行工具。只在真实工具返回成功后说明已修改；若本轮未执行就如实说明。";
                 if (toolsEnabled) system += "\n用readProgress和writeProgress维护progress.json，将开发工作拆成节点，状态仅TODO未完成、IN_PROGRESS进行中、DONE完成。开始前查看已有进度，及时更新节点。DONE仅表示开发节点完成，不代表API测试通过。";
                 if (toolsEnabled) system += "\n若开放API测试工具，先apiTestFormat读取精确格式，再维护OpenAPI契约和suite.test.json。后端测试前自行通过Docker工具启动服务并验证监听，多个服务在targets配置当前项目容器ID、内部port和basePath，用例引用target别名；不要让用户填写IP，不使用localhost访问其他容器。至少测试执行容器需要curl。生成的基础用例必须根据业务补充，发起后读取JSON报告，只以真实报告说明通过率。";
                 if (toolsEnabled) system += "\n每完成一个独立代码功能或修复，调用gitStatus，有代码变更才gitCommit；简单单文件任务整体完成后提交一次即可。AGENTS.md、progress.json、docs/requirements.md、docs/design/overview.md、docs/design/detail.md、api/openapi.json、api/tests/为平台管理文件，故意不进Git，仅修改这些文件时clean=true正常，不为此重复查Git或读取.gitignore，不修改忽略规则、不创建空提交。提交说明使用feat:、fix:等格式。";
@@ -276,6 +297,7 @@ public class AgentService implements ApplicationRunner {
             });
         } catch (RuntimeException exception) { capacity.release(); throw exception; }
         var state = new Active(Objects.requireNonNull(run));
+        contexts.clear(conversationId, run.getMemoryEnabled());
         active.put(run.getId(), state);
         state.timeoutSeconds = model.timeoutSeconds() + 10L;
         scheduleTimeout(state);
@@ -371,7 +393,12 @@ public class AgentService implements ApplicationRunner {
                 runs.update(failed);
             } catch (RuntimeException ignored) { /* 启动时恢复未完成任务 */ }
             return false;
-        } finally { contexts.clear(state.run.getConversationId(), state.run.getMemoryEnabled()); active.remove(state.run.getId()); capacity.release(); }
+        } finally {
+            contexts.clear(state.run.getConversationId(), state.run.getMemoryEnabled());
+            active.remove(state.run.getId());
+            state.changed();
+            capacity.release();
+        }
     }
 
     private void scheduleTimeout(Active state) {
@@ -398,12 +425,15 @@ public class AgentService implements ApplicationRunner {
             if (waiting) {
                 if (state.timeout != null) state.timeout.cancel(false);
                 state.phase = "WAITING_USER";
+                state.pendingQuestion = clarifications.pending(state.run.getId());
                 state.run.setProcessJson(RunStep.encode(state.snapshot()));
                 runs.saveProcess(state.run.getId(), state.run.getProcessJson());
             } else {
                 state.phase = "CALLING_TOOL";
+                state.pendingQuestion = null;
                 scheduleTimeout(state);
             }
+            state.changed();
         }
     }
 
@@ -437,6 +467,7 @@ public class AgentService implements ApplicationRunner {
                 contexts.clear(state.run.getConversationId(), state.run.getMemoryEnabled());
                 if (state.timeout != null) state.timeout.cancel(false);
                 active.remove(state.run.getId(), state);
+                state.changed();
                 capacity.release();
             }
         }
@@ -446,9 +477,20 @@ public class AgentService implements ApplicationRunner {
         conversations.requireOwned(appId, conversationId);
         return read(conversationId, runId);
     }
+    public RunView latest(String appId, String conversationId) {
+        conversations.requireOwned(appId, conversationId);
+        var run = runs.latest(conversationId);
+        return run == null ? null : read(conversationId, run.getId());
+    }
 
     public ConversationContextService.View context(String appId, String conversationId, boolean memory) {
         conversations.requireOwned(appId, conversationId);
+        for (var state : active.values()) {
+            if (!state.run.getConversationId().equals(conversationId)) continue;
+            synchronized (state) {
+                if (!state.terminal.get()) return contexts.view(conversationId, memory, state.run, state.snapshot(), state.content());
+            }
+        }
         return contexts.view(conversationId, memory);
     }
 
@@ -502,7 +544,17 @@ public class AgentService implements ApplicationRunner {
 
     private RunView read(String conversationId, String runId) {
         var live = active.get(runId);
-        var run = live == null ? runs.selectOneById(runId) : live.run;
+        if (live != null) {
+            synchronized (live) {
+                if (!conversationId.equals(live.run.getConversationId())) throw error("RUN_NOT_FOUND", "对话任务不存在", HttpStatus.NOT_FOUND);
+                // 正文、步骤、phase 必须来自同一次读取，避免增量基线前后不一致。
+                var run = live.run;
+                if (active.get(runId) == live) return new RunView(run.getId(), run.getConversationId(), "RUNNING", run.getModelId(), run.getReasoningEffort(),
+                        run.getMemoryEnabled(), run.getUserMessageId(), null, live.content(), run.getErrorCode(),
+                        run.getCreatedAt(), null, live.phase(), live.snapshot(), live.pendingQuestion);
+            }
+        }
+        var run = runs.selectOneById(runId);
         if (run == null || !conversationId.equals(run.getConversationId())) throw error("RUN_NOT_FOUND", "对话任务不存在", HttpStatus.NOT_FOUND);
         var state = active.get(runId);
         String text = state == null ? "" : state.content();
@@ -522,32 +574,61 @@ public class AgentService implements ApplicationRunner {
 
     public SseEmitter events(String appId, String conversationId, String runId) {
         get(appId, conversationId, runId);
-        if (!subscriptions.tryAcquire()) throw error("AGENT_BUSY", "订阅数量已满", HttpStatus.TOO_MANY_REQUESTS);
+        String user = cn.dev33.satoken.stp.StpUtil.getLoginIdAsString();
+        acquireSubscription(user, runId);
         var emitter = new SseEmitter(0L);
         var closed = new AtomicBoolean();
-        Runnable close = () -> { if (closed.compareAndSet(false, true)) subscriptions.release(); };
+        // 每个订阅最多保留一个变更通知，慢客户端不会积压 token/快照。
+        var changes = new ArrayBlockingQueue<Boolean>(1);
+        Runnable signal = () -> changes.offer(Boolean.TRUE);
+        var live = active.get(runId);
+        Runnable close = () -> {
+            if (closed.compareAndSet(false, true)) {
+                if (live != null) live.listeners.remove(signal);
+                changes.offer(Boolean.TRUE);
+                releaseSubscription(user, runId);
+            }
+        };
         emitter.onCompletion(close); emitter.onTimeout(close); emitter.onError(cause -> close.run());
-        workers.execute(() -> {
+        if (live != null) {
+            live.listeners.add(signal);
+            if (closed.get()) live.listeners.remove(signal);
+        }
+        signal.run();
+        try { workers.execute(() -> {
             try {
+                RunView previous = null;
+                long sequence = 0;
                 while (!closed.get()) {
+                    if (changes.poll(15, TimeUnit.SECONDS) == null) {
+                        if (!closed.get()) emitter.send(SseEmitter.event().comment("keepalive"));
+                        continue;
+                    }
+                    if (closed.get()) break;
+                    // 合并密集 token，最多约每 80ms 一次；不在模型回调里执行网络发送。
+                    if (live != null && !live.terminal.get()) Thread.sleep(80);
+                    if (closed.get()) break;
+                    changes.clear();
                     var snapshot = read(conversationId, runId);
-                    // 全量快照避免重连后重复拼接
-                    emitter.send(SseEmitter.event().name("snapshot").data(snapshot));
+                    // 每条新连接先恢复快照，之后仅发送变化的文本和步骤。
+                    if (previous == null) emitter.send(SseEmitter.event().name("snapshot").data(snapshot));
+                    else if (!previous.equals(snapshot)) emitter.send(SseEmitter.event().name("delta").data(RunDelta.between(++sequence, previous, snapshot)));
+                    previous = snapshot;
                     if (!"RUNNING".equals(snapshot.status())) {
-                        emitter.send(SseEmitter.event().name("done").data(snapshot));
+                        emitter.send(SseEmitter.event().name("done").data(Map.of("id", runId)));
                         if (!closed.get()) emitter.complete();
                         break;
                     }
-                    Thread.sleep(1000);
                 }
             } catch (InterruptedException exception) {
                 Thread.currentThread().interrupt();
+                if (!closed.get()) emitter.complete();
             } catch (Exception exception) {
-                // 发送失败后不再完成失效响应
                 log.debug("SSE subscription ended, run={}", runId);
+                if (!closed.get()) emitter.completeWithError(exception);
             }
             finally { close.run(); }
-        });
+        }); } catch (RuntimeException exception) { close.run(); throw exception; }
         return emitter;
     }
 
@@ -557,7 +638,8 @@ public class AgentService implements ApplicationRunner {
                 run.getMemoryEnabled(), run.getUserMessageId(), run.getAssistantMessageId(), text, run.getErrorCode(),
                 run.getCreatedAt(), run.getFinishedAt(),
                 state == null ? run.getStatus() : state.phase(),
-                state == null ? RunStep.decode(run.getProcessJson()) : state.snapshot(), clarifications.pending(run.getId()));
+                state == null ? RunStep.decode(run.getProcessJson()) : state.snapshot(),
+                state == null ? clarifications.pending(run.getId()) : state.pendingQuestion);
     }
     private String clip(String text, int limit) { return text.substring(0, Math.min(text.length(), limit)); }
     private BusinessException error(String code, String message, HttpStatus status) { return new BusinessException(code, message, status); }

@@ -14,6 +14,7 @@ import java.util.function.BooleanSupplier;
 
 @Component
 public class ToolChatRunner {
+    private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(ToolChatRunner.class);
     @org.springframework.beans.factory.annotation.Value("${drawsite.agent.max-tool-rounds:80}")
     private int maxRounds = 80;
     @org.springframework.beans.factory.annotation.Value("${drawsite.agent.max-tool-calls:240}")
@@ -67,6 +68,12 @@ public class ToolChatRunner {
                     @Override public void onCompleteResponse(ChatResponse response) {
                         if (stopped.getAsBoolean()) return;
                         var ai = response.aiMessage();
+                        if (!ai.hasToolExecutionRequests() && ai.text() != null && ai.text().stripLeading().startsWith("[历史轮次状态：")
+                                && ai.text().contains("[调用 ") && ai.text().contains("/SUCCEEDED]")) {
+                            log.warn("Model emitted history transcript as final text instead of structured tool calls, round={}", round + 1);
+                            handler.onError(new IllegalStateException("模型将历史执行记录作为正文输出，未提供有效工具调用；本轮不能视为操作成功"));
+                            return;
+                        }
                         observer.roundFinished(ai.hasToolExecutionRequests());
                         if (!ai.hasToolExecutionRequests()) { handler.onCompleteResponse(response); return; }
                         executor.execute(() -> {
