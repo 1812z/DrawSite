@@ -10,7 +10,7 @@ public interface AgentRunMapper extends BaseMapper<AgentRun> {
     @Select("SELECT * FROM agent_run WHERE conversation_id = #{conversationId} ORDER BY created_at DESC, id LIMIT 1")
     AgentRun latest(String conversationId);
 
-    @Select("SELECT * FROM agent_run WHERE conversation_id=#{id} AND status IN ('SUCCEEDED','FAILED','CANCELLED') AND (#{memory} OR memory_enabled=FALSE) ORDER BY created_at,id")
+    @Select("SELECT * FROM agent_run WHERE conversation_id=#{id} AND status IN ('SUCCEEDED','FAILED','CANCELLED') ORDER BY created_at,id")
     List<AgentRun> contextHistory(@Param("id") String id, @Param("memory") boolean memory);
 
     @Select("SELECT COUNT(*) FROM agent_run WHERE conversation_id = #{conversationId} AND status = 'SUCCEEDED'")

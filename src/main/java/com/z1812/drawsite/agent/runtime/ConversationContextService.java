@@ -25,7 +25,8 @@ public class ConversationContextService {
     private final Map<String, String> compressionText = new ConcurrentHashMap<>();
     private record CachedUsage(int tokens, boolean hasSummary, long expiresAt) {}
     private final Map<String, CachedUsage> usageCache = new ConcurrentHashMap<>();
-    private String scope(String id, boolean memory) { return id + ":" + memory; }
+    // 记忆只决定本轮提示词和工具权限，不拆分会话历史、摘要或用量。
+    private String scope(String id, boolean memory) { return id; }
     public void clear(String id, boolean memory) { liveCompression.remove(id); usageCache.remove(scope(id, memory)); }
     public void compactLive(String id, boolean memory, List<ChatMessage> context, int toolTokens, ModelConfig model, String key, BooleanSupplier stopped) {
         boolean needsCompression = (long) compressor.estimate(context) + toolTokens >= compressor.threshold();
@@ -103,7 +104,7 @@ public class ConversationContextService {
         });
         // 展示始终按会话内容估算，不混入系统提示、工具定义及压缩预留额度。
         int used = cached.tokens();
-        if (active != null && (memory || !Boolean.TRUE.equals(active.getMemoryEnabled()))) {
+        if (active != null) {
             var current = new ArrayList<ChatMessage>();
             var user = messages.selectOneById(active.getUserMessageId());
             if (user != null) current.add(UserMessage.from(user.getContent()));
