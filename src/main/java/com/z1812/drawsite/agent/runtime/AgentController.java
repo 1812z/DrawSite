@@ -23,7 +23,7 @@ public class AgentController {
     }
     @GetMapping("/conversations/{conversationId}/context")
     public ApiResponse<ConversationContextService.View> context(@PathVariable String applicationId, @PathVariable String conversationId,
-                                                               @RequestParam(defaultValue = "true") boolean memoryEnabled) {
+                                                                @RequestParam(defaultValue = "true") boolean memoryEnabled) {
         return ApiResponse.success(agent.context(applicationId, conversationId, memoryEnabled));
     }
     @PostMapping("/conversations/{conversationId}/context/compress")

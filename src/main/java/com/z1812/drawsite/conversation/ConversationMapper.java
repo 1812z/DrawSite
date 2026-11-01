@@ -6,6 +6,8 @@ import java.util.List;
 
 @Mapper
 public interface ConversationMapper extends BaseMapper<ConversationEntity> {
+    @Select("SELECT c.* FROM conversation c JOIN application a ON a.id=c.application_id WHERE c.id=#{id} AND c.application_id=#{applicationId} AND a.owner_user_id=#{owner}")
+    ConversationEntity findOwned(@Param("applicationId") String applicationId, @Param("id") String id, @Param("owner") String owner);
     @Select("SELECT * FROM conversation WHERE application_id = #{applicationId} ORDER BY updated_at DESC, id LIMIT #{size} OFFSET #{offset}")
     List<ConversationEntity> list(@Param("applicationId") String applicationId, @Param("size") int size, @Param("offset") long offset);
     @Select("SELECT COUNT(*) FROM conversation WHERE application_id = #{applicationId}")

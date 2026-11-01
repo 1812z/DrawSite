@@ -54,10 +54,20 @@ public class ConversationContextService {
             for (int i = 0; i < all.size(); i++) if (all.get(i).getId().equals(checkpoint.coveredRunId())) { start = i + 1; break; }
         }
         var result = new ArrayList<Turn>();
+        var ids = new ArrayList<String>();
+        for (int i = start; i < all.size(); i++) {
+            ids.add(all.get(i).getUserMessageId());
+            if (all.get(i).getAssistantMessageId() != null) ids.add(all.get(i).getAssistantMessageId());
+        }
+        var contents = new HashMap<String, MessageEntity>();
+        // 批量只读取正文，避免逐轮往返数据库及重复读取消息里的 process_json。
+        for (int i = 0; i < ids.size(); i += 500) {
+            for (var message : messages.contextContents(ids.subList(i, Math.min(i + 500, ids.size())))) contents.put(message.getId(), message);
+        }
         for (int i = start; i < all.size(); i++) {
             var run = all.get(i);
-            var user = messages.selectOneById(run.getUserMessageId());
-            var assistant = run.getAssistantMessageId() == null ? null : messages.selectOneById(run.getAssistantMessageId());
+            var user = contents.get(run.getUserMessageId());
+            var assistant = contents.get(run.getAssistantMessageId());
             var turn = new ArrayList<ChatMessage>();
             if (user != null) turn.add(UserMessage.from(user.getContent()));
             appendTurn(turn, run.getStatus(), RunStep.decode(run.getProcessJson()), assistant == null ? null : assistant.getContent());
@@ -85,13 +95,12 @@ public class ConversationContextService {
         return view(id, memory, null, List.of(), "");
     }
     public View view(String id, boolean memory, AgentRun active, List<RunStep> steps, String content) {
-        var cached = usageCache.get(scope(id, memory));
-        if (cached == null || cached.expiresAt() < System.nanoTime()) {
+        var cached = usageCache.compute(scope(id, memory), (key, existing) -> {
+            if (existing != null && existing.expiresAt() >= System.nanoTime()) return existing;
             var checkpoint = checkpoints.get(id, memory);
             int tokens = compressor.estimate(flatten(checkpoint, history(id, memory, checkpoint)));
-            cached = new CachedUsage(tokens, checkpoint != null, System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(15));
-            usageCache.put(scope(id, memory), cached);
-        }
+            return new CachedUsage(tokens, checkpoint != null, System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(15));
+        });
         // 展示始终按会话内容估算，不混入系统提示、工具定义及压缩预留额度。
         int used = cached.tokens();
         if (active != null && (memory || !Boolean.TRUE.equals(active.getMemoryEnabled()))) {

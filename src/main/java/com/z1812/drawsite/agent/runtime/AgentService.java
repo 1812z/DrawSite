@@ -480,7 +480,10 @@ public class AgentService implements ApplicationRunner {
     public RunView latest(String appId, String conversationId) {
         conversations.requireOwned(appId, conversationId);
         var run = runs.latest(conversationId);
-        return run == null ? null : read(conversationId, run.getId());
+        if (run == null) return null;
+        if (active.containsKey(run.getId()) || "RUNNING".equals(run.getStatus())) return read(conversationId, run.getId());
+        var message = run.getAssistantMessageId() == null ? null : messages.selectOneById(run.getAssistantMessageId());
+        return view(run, message == null ? "" : message.getContent());
     }
 
     public ConversationContextService.View context(String appId, String conversationId, boolean memory) {

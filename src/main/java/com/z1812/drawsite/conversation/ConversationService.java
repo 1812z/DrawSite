@@ -28,9 +28,10 @@ public class ConversationService {
     }
 
     public ConversationEntity requireOwned(String applicationId, String conversationId) {
-        applications.requireOwned(applicationId);
-        var conversation = conversations.selectOneById(conversationId);
+        var conversation = conversations.findOwned(applicationId, conversationId, cn.dev33.satoken.stp.StpUtil.getLoginIdAsString());
         if (conversation == null || !applicationId.equals(conversation.getApplicationId())) {
+            // 失败分支保留原有 APPLICATION_NOT_FOUND / CONVERSATION_NOT_FOUND 语义。
+            applications.requireOwned(applicationId);
             throw new BusinessException("CONVERSATION_NOT_FOUND", "会话不存在", HttpStatus.NOT_FOUND);
         }
         return conversation;
